@@ -201,7 +201,11 @@ def attributes(*items: Optional[Attr]) -> str:
                 if value:
                     result.append(f"{key}=\"{key}\"")
                 continue
-            result.append(f"{key}=\"{html.escape(str(value), quote=True)}\"")
+            # Don't double-escape onclick attributes as they're already escaped by Normalize()
+            if key == "onclick":
+                result.append(f"{key}=\"{str(value)}\"")
+            else:
+                result.append(f"{key}=\"{html.escape(str(value), quote=True)}\"")
     return " ".join(result)
 
 
@@ -291,7 +295,19 @@ def IconEnd(css: str, text: str) -> str:
 
 
 def Label(css: str, *attrs: Attr) -> Callable[[str], str]:
+    required = False
+    for attr in attrs:
+        if isinstance(attr, Mapping):
+            if attr.get("required"):
+                required = True
+                break
+
     def render(text: str) -> str:
+        if required:
+            indicator = '<span class="psui-required-indicator text-red-500" aria-hidden="true">*</span>'
+            pieces = [part for part in (text, indicator) if part]
+            content = " ".join(pieces) if pieces else indicator
+            return label(css, *attrs)(content)
         return label(css, *attrs)(text)
 
     return render
@@ -513,7 +529,9 @@ class _TextInput(_BaseInput):
     def Render(self, label_text: str) -> str:
         if not self.visible:
             return ""
+
         value = self.resolveValue()
+        
         return div(self.css)(
             Label(self.cssLabel, {"for": self._target.id, "required": self.required})(label_text),
             input(

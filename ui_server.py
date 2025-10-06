@@ -7,6 +7,8 @@ structure. The module intentionally avoids third-party dependencies.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import secrets
 import threading
@@ -24,6 +26,78 @@ from ui import (
     Classes,
     script as render_script,
 )
+
+
+_GLOBAL_STYLE = Trim(
+    """
+    <style>
+      .psui-required-indicator { font-weight: normal; }
+      .invalid,
+      select:invalid,
+      textarea:invalid,
+      input:invalid {
+        border-bottom-width: 2px;
+        border-bottom-color: #dc2626;
+        border-bottom-style: dotted;
+      }
+      .invalid-if:has(input:invalid),
+      .invalid-if:has(select:invalid),
+      .invalid-if:has(textarea:invalid) {
+        border-bottom-width: 2px;
+        border-bottom-color: #dc2626;
+        border-bottom-style: dotted;
+      }
+    </style>
+    """
+)
+
+_ERROR_PAGE = Trim(
+    """
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Something went wrong…</title>
+        <style>
+          html,body{height:100%;}
+          body{margin:0;display:flex;align-items:center;justify-content:center;background:#f3f4f6;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;}
+          .card{background:#fff;box-shadow:0 10px 25px rgba(0,0,0,.08);border-radius:14px;padding:28px 32px;border:1px solid rgba(0,0,0,.06);text-align:center;max-width:360px;}
+          .title{font-size:20px;font-weight:600;margin-bottom:6px;}
+          .sub{font-size:14px;color:#6b7280;}
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="title">Something went wrong…</div>
+          <div class="sub">Please retry once the server finishes processing.</div>
+        </div>
+      </body>
+    </html>
+    """
+)
+
+
+def _resolve_awaitable(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+    new_loop = asyncio.new_event_loop()
+    try:
+        return new_loop.run_until_complete(value)
+    finally:
+        new_loop.close()
+
+
+def _ensure_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "ignore")
+    return str(value)
 
 ActionType = str
 GET = "GET"
@@ -368,6 +442,7 @@ class App:
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
             '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" integrity="sha512-wnea99uKIC3TJF7v4eKk4Y+lMz2Mklv18+r4na2Gn1abDRPPOeef95xTzdwGD9e6zXJBteMIhZ1+68QC5byJZw==" crossorigin="anonymous" referrerpolicy="no-referrer" />',
         ]
+        self.HTMLHead.append(_GLOBAL_STYLE)
         self.HTMLHead.append(script([
             _STRINGIFY,
             _LOADER,
@@ -447,10 +522,11 @@ class App:
 
         # Build response body via page/component callable
         ctx = Context(self, handler, getattr(handler, "_psui_session_id", ""))
-        result = callable_fn(ctx)
+        result = _resolve_awaitable(callable_fn(ctx))
+        text = _ensure_text(result)
         if ctx.append:
-            result += "".join(ctx.append)
-        return result
+            text += "".join(ctx.append)
+        return text
 
     def Listen(self, port: int = 1422) -> None:
         app = self
@@ -483,11 +559,11 @@ class App:
                             body_items = None
                 if body_items is not None:
                     _REQUEST_BODIES[id(self)] = body_items
+                set_cookie_header: str | None = None
                 try:
                     # Session cookie management (simplified)
                     cookies = SimpleCookie(self.headers.get("Cookie", ""))
                     sid = cookies.get("psui__sid")
-                    set_cookie_header: str | None = None
                     if sid is None:
                         sid_value = "sess-" + secrets.token_hex(8)
                         set_cookie_header = f"psui__sid={sid_value}; Path=/; HttpOnly; SameSite=Lax"
@@ -506,6 +582,23 @@ class App:
                     self.end_headers()
                     try:
                         self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                except Exception as exc:  # pragma: no cover - defensive server handler
+                    if app._debug:
+                        try:
+                            print("[p-sui] Handler error:", exc)
+                        except Exception:
+                            pass
+                    error_body = _ERROR_PAGE.encode("utf-8")
+                    self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                    if set_cookie_header:
+                        self.send_header("Set-Cookie", set_cookie_header)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(error_body)))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(error_body)
                     except (BrokenPipeError, ConnectionResetError):
                         pass
                 finally:

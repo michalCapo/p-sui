@@ -14,12 +14,26 @@ if str(_PROJECT_DIR) not in sys.path:
 
 import ui
 from ui_server import Context, MakeApp
+from pages.append import AppendContent
+from pages.area import AreaContent
 from pages.button import ButtonContent
 from pages.captcha import CaptchaContent
+from pages.checkbox import CheckboxContent
+from pages.clock import Clock
 from pages.collate import CollateContent
+from pages.counter import Counter
+from pages.date import DateContent
+from pages.deffered import Deffered
+from pages.hello import Hello
+from pages.icons import Icons
 from pages.login import Login
 from pages.number import NumberContent
+from pages.others import OthersContent
+from pages.password import PasswordContent
+from pages.radio import RadioContent
+from pages.select import SelectContent
 from pages.showcase import ShowcaseContent
+from pages.table import TableContent
 from pages.text import TextContent
 
 Route = Tuple[str, str, Callable[[Context], str]]
@@ -27,12 +41,26 @@ Route = Tuple[str, str, Callable[[Context], str]]
 
 routes: List[Route] = [
     ("/", "Showcase", ShowcaseContent),
+    ("/area", "Area", AreaContent),
     ("/button", "Button", ButtonContent),
-    ("/text", "Text", TextContent),
-    ("/number", "Number", NumberContent),
+    ("/checkbox", "Checkbox", CheckboxContent),
+    ("/date", "Date", DateContent),
+    ("/hello", "Hello", Hello),
+    ("/icons", "Icons", Icons),
     ("/login", "Login", Login),
-    ("/collate", "Collate", CollateContent),
+    ("/number", "Number", NumberContent),
+    ("/password", "Password", PasswordContent),
+    ("/radio", "Radio", RadioContent),
+    ("/select", "Select", SelectContent),
+    ("/table", "Table", TableContent),
+    ("/text", "Text", TextContent),
+    ("/append", "Append", AppendContent),
     ("/captcha", "Captcha", CaptchaContent),
+    ("/clock", "Clock", Clock),
+    ("/collate", "Collate", CollateContent),
+    ("/counter", "Counter", Counter),
+    ("/deffered", "Deferred", Deffered),
+    ("/others", "Others", OthersContent),
 ]
 
 app = MakeApp("en")
