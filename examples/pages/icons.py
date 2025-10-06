@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import ui
+from ui_server import Context
 
 
-def Icons() -> str:
-    icon = ui.div("flex items-center gap-3 border rounded p-4")
+def Icons(_: Context) -> str:
+    icon = ui.div("flex items-center gap-3 border rounded p-4 bg-white rounded-lg border-gray-300")
 
-    return ui.div("bg-white rounded-lg shadow w-full")(
+    return ui.div("w-full")(
         ui.div("flex flex-col gap-3")(
             icon(
                 ui.IconStart(
@@ -31,4 +32,3 @@ def Icons() -> str:
             ),
         ),
     )
-

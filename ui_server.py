@@ -8,16 +8,25 @@ structure. The module intentionally avoids third-party dependencies.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import inspect
 import json
+import os
 import secrets
+import socket
+import struct
 import threading
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
+
+from socketserver import ThreadingMixIn
 
 from ui import (
     Target,
@@ -47,6 +56,26 @@ _GLOBAL_STYLE = Trim(
         border-bottom-color: #dc2626;
         border-bottom-style: dotted;
       }
+    </style>
+    """
+)
+
+_DARK_STYLE = Trim(
+    r"""
+    <style id="psui-dark-overrides">
+      html.dark { color-scheme: dark; }
+      /* Override backgrounds commonly used by components and examples.
+         Do not override bg-gray-200 so skeleton placeholders remain visible. */
+      html.dark.bg-white, html.dark.bg-gray-100 { background-color:#111827 !important; }
+      .dark .bg-white, .dark .bg-gray-100, .dark .bg-gray-50 { background-color:#111827 !important; }
+      /* Text color overrides */
+      .dark .text-black, .dark .text-gray-800, .dark .text-gray-700 { color:#e5e7eb !important; }
+      /* Borders and placeholders for form controls */
+      .dark .border-gray-300 { border-color:#374151 !important; }
+      .dark input, .dark select, .dark textarea { color:#e5e7eb !important; background-color:#1f2937 !important; }
+      .dark input::placeholder, .dark textarea::placeholder { color:#9ca3af !important; }
+      /* Common hover bg used in nav/examples */
+      .dark .hover\:bg-gray-200:hover { background-color:#374151 !important; }
     </style>
     """
 )
@@ -252,6 +281,168 @@ def _target_dict(target: Any) -> Dict[str, Any]:
     return {}
 
 
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_AUTORELOAD_EXTENSIONS = {".py", ".html", ".htm", ".js", ".ts", ".css", ".json"}
+_AUTORELOAD_IGNORED_PARTS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
+
+
+class _WebSocketConnection:
+    def __init__(self, sock: socket.socket) -> None:
+        self._socket = sock
+        self._lock = threading.Lock()
+        self._closed = False
+        try:
+            self._socket.settimeout(1.0)
+        except OSError:
+            pass
+
+    def send_text(self, message: str) -> bool:
+        if self._closed:
+            return False
+        payload = message.encode("utf-8")
+        return self._send_frame(0x1, payload)
+
+    def send_json(self, message: Mapping[str, Any]) -> bool:
+        try:
+            text = json.dumps(message, separators=(",", ":"))
+        except Exception:
+            return False
+        return self.send_text(text)
+
+    def run(self) -> None:
+        while not self._closed:
+            try:
+                frame = self._recv_frame()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if frame is None:
+                break
+            opcode, payload = frame
+            if opcode == 0x8:  # Close
+                break
+            if opcode == 0x9:  # Ping
+                self._send_frame(0xA, payload)
+        self._close_socket()
+
+    def _recv_exact(self, size: int) -> bytes:
+        data = b""
+        while len(data) < size:
+            chunk = self._socket.recv(size - len(data))
+            if not chunk:
+                raise OSError("Socket closed")
+            data += chunk
+        return data
+
+    def _recv_frame(self) -> Optional[Tuple[int, bytes]]:
+        header = self._socket.recv(2)
+        if not header or len(header) < 2:
+            return None
+        first, second = header
+        opcode = first & 0x0F
+        masked = (second & 0x80) == 0x80
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._recv_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._recv_exact(8))[0]
+        mask_key = b""
+        if masked:
+            mask_key = self._recv_exact(4)
+        payload = self._recv_exact(length) if length else b""
+        if masked and mask_key:
+            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        return opcode, payload
+
+    def _send_frame(self, opcode: int, payload: bytes) -> bool:
+        if self._closed:
+            return False
+        header = bytearray()
+        header.append(0x80 | (opcode & 0x0F))
+        length = len(payload)
+        if length < 126:
+            header.append(length)
+        elif length < (1 << 16):
+            header.append(126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(127)
+            header.extend(struct.pack("!Q", length))
+        frame = bytes(header) + payload
+        with self._lock:
+            try:
+                self._socket.sendall(frame)
+                return True
+            except OSError:
+                self._close_socket()
+                return False
+
+    def _close_socket(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+
+
+class _WebSocketManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sessions: Dict[str, List[_WebSocketConnection]] = {}
+
+    def register(self, session_id: str, conn: _WebSocketConnection) -> None:
+        if not session_id:
+            return
+        with self._lock:
+            self._sessions.setdefault(session_id, []).append(conn)
+
+    def unregister(self, session_id: str, conn: _WebSocketConnection) -> None:
+        if not session_id:
+            return
+        with self._lock:
+            connections = self._sessions.get(session_id)
+            if not connections:
+                return
+            try:
+                connections.remove(conn)
+            except ValueError:
+                pass
+            if not connections:
+                self._sessions.pop(session_id, None)
+
+    def send_patches(self, session_id: str, patches: Sequence[Dict[str, str]]) -> bool:
+        if not session_id or not patches:
+            return False
+        with self._lock:
+            targets = list(self._sessions.get(session_id, []))
+        if not targets:
+            return False
+        message = {"type": "patch", "patches": list(patches)}
+        delivered = False
+        for conn in targets:
+            if conn.send_json(message):
+                delivered = True
+            else:
+                self.unregister(session_id, conn)
+        return delivered
+
+    def broadcast_reload(self) -> None:
+        message = {"type": "reload"}
+        with self._lock:
+            sessions = {sid: list(conns) for sid, conns in self._sessions.items()}
+        for session_id, connections in sessions.items():
+            for conn in connections:
+                if not conn.send_json(message):
+                    self.unregister(session_id, conn)
+
+
 class Context:
     def __init__(self, app: "App", handler: BaseHTTPRequestHandler, session_id: str) -> None:
         self.app = app
@@ -320,17 +511,17 @@ class Context:
             f"{call}(event, \"{swap}\", \"{target_id}\", \"{path}\", {payload})"
         )
 
-    def Send(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> Any:
+    def Send(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> _CallBuilder:
         callable_method = self.Callable(method)
         wrapper = {"method": callable_method, "values": list(values)}
         return _CallBuilder(self, "FORM", wrapper)
 
-    def Call(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> Any:
+    def Call(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> _CallBuilder:
         callable_method = self.Callable(method)
         wrapper = {"method": callable_method, "values": list(values)}
         return _CallBuilder(self, POST, wrapper)
 
-    def Submit(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> Any:
+    def Submit(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> _SubmitBuilder:
         callable_method = self.Callable(method)
         wrapper = {"method": callable_method, "values": list(values)}
         return _SubmitBuilder(self, wrapper)
@@ -355,30 +546,47 @@ class Context:
         _display_message(self, message, "bg-blue-700 text-white")
 
     def Patch(self, target: Mapping[str, str], html: Any, clear: Optional[Callable[[], None]] = None) -> None:
-        if callable(html):
-            html = html()
-        if html is None:
-            html = ""
-        swap = target.get("swap", "inline")
-        target_id = target.get("id", "")
-        html_json = json.dumps(str(html))
+        target_id = str(target.get("id", "") or "")
+        swap = str(target.get("swap", "inline") or "inline")
+
+        try:
+            resolved = html() if callable(html) else html
+        except Exception:
+            resolved = None
+
+        try:
+            resolved = _resolve_awaitable(resolved)
+        except Exception:
+            resolved = None
+
+        html_text = _ensure_text(resolved)
+        html_json = json.dumps(html_text)
+
         script = Trim(
             f"""
             <script>(function(){{
                 try {{
                     var el=document.getElementById('{target_id}');
-                    if(!el) return;
+                    if(!el) {{ try {{ if(window.__psuiPatch&&window.__psuiPatch.notifyInvalid){{ window.__psuiPatch.notifyInvalid('{target_id}'); }} }} catch(_{{}}){{}}; return; }}
                     var html={html_json};
                     if('{swap}'==='inline') {{ el.innerHTML = html; }}
                     else if('{swap}'==='outline') {{ el.outerHTML = html; }}
                     else if('{swap}'==='append') {{ el.insertAdjacentHTML('beforeend', html); }}
                     else if('{swap}'==='prepend') {{ el.insertAdjacentHTML('afterbegin', html); }}
-                }} catch(_){ { } }
+                }} catch(_{{}}){{}}
             }})();</script>
             """
         )
         self.append.append(script)
-        if clear:
+
+        session_id = str(self.sessionID or "")
+        if target_id and session_id:
+            self.app._queue_patch(
+                session_id,
+                {"id": target_id, "swap": swap, "html": html_text},
+                clear,
+            )
+        elif clear:
             try:
                 clear()
             except Exception:
@@ -403,7 +611,7 @@ class _CallBuilder:
     def Prepend(self, target: Mapping[str, str]) -> str:
         return self._ctx.Post(self._as, "prepend", {**self._payload, "target": _target_dict(target)})
 
-    def NoSwap(self) -> str:
+    def Stop(self) -> str:
         return self._ctx.Post(self._as, "none", self._payload)
 
 
@@ -429,7 +637,7 @@ class _SubmitBuilder:
     def Prepend(self, target: Mapping[str, str]) -> Dict[str, str]:
         return self._attr("prepend", target)
 
-    def NoSwap(self) -> Dict[str, str]:
+    def Stop(self) -> Dict[str, str]:
         return self._attr("none", None)
 
 
@@ -446,14 +654,26 @@ class App:
         self.HTMLHead.append(script([
             _STRINGIFY,
             _LOADER,
+            _OFFLINE,
             _ERROR,
             _POST,
             _SUBMIT,
             _LOAD,
+            _PATCH,
             _THEME,
         ]))
+        self.HTMLHead.append(_DARK_STYLE)
         self._routes: Dict[Tuple[ActionType, str], Callable[[Context], str]] = {}
         self._debug = False
+        self._patch_lock = threading.Lock()
+        self._pending_patches: Dict[str, List[Dict[str, str]]] = {}
+        self._patch_clear: Dict[Tuple[str, str], Callable[[], None]] = {}
+        self._ws_manager = _WebSocketManager()
+        self._autoreload_enabled = False
+        self._autoreload_thread: Optional[threading.Thread] = None
+        self._autoreload_event = threading.Event()
+        self._autoreload_watch: List[Path] = [Path.cwd()]
+        self._autoreload_last_signal = 0.0
 
     def HTMLBody(self, css: str) -> str:
         css = Classes(css)
@@ -476,10 +696,161 @@ class App:
         self._debug = bool(enable)
 
     def AutoReload(self, enable: bool) -> None:
-        # Auto reload requires WebSocket support in the original implementation.
-        # The Python port keeps the method for API compatibility but acts as a no-op.
-        if enable and self._debug:
-            print("[p-sui] AutoReload is not implemented; skipping")
+        enable = bool(enable)
+        self._autoreload_enabled = enable
+        if enable:
+            if self._autoreload_thread and self._autoreload_thread.is_alive():
+                return
+            self._autoreload_event.clear()
+            self._autoreload_thread = threading.Thread(
+                target=self._autoreload_worker,
+                name="psui-autoreload",
+                daemon=True,
+            )
+            self._autoreload_thread.start()
+            if self._debug:
+                print("[p-sui] AutoReload enabled (watching for changes)")
+        else:
+            self._autoreload_event.set()
+            thread = self._autoreload_thread
+            if thread and thread.is_alive():
+                thread.join(timeout=0.5)
+            self._autoreload_thread = None
+            if self._debug:
+                print("[p-sui] AutoReload disabled")
+
+    def _autoreload_worker(self) -> None:
+        try:
+            previous = self._snapshot_files()
+        except Exception:
+            previous = {}
+        while not self._autoreload_event.wait(1.0):
+            try:
+                current = self._snapshot_files()
+            except Exception:
+                continue
+            if self._files_changed(previous, current):
+                previous = current
+                self._trigger_reload()
+
+    def _snapshot_files(self) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {}
+        for root in self._autoreload_watch:
+            try:
+                base = Path(root)
+            except Exception:
+                continue
+            if not base.exists():
+                continue
+            try:
+                iterator = base.rglob("*")
+            except Exception:
+                continue
+            for path in iterator:
+                try:
+                    if path.is_dir():
+                        continue
+                except OSError:
+                    continue
+                if any(part in _AUTORELOAD_IGNORED_PARTS for part in path.parts):
+                    continue
+                suffix = path.suffix.lower()
+                if suffix and suffix not in _AUTORELOAD_EXTENSIONS:
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                snapshot[str(path)] = mtime
+        return snapshot
+
+    @staticmethod
+    def _files_changed(previous: Mapping[str, float], current: Mapping[str, float]) -> bool:
+        if len(previous) != len(current):
+            return True
+        for key, value in current.items():
+            if previous.get(key) != value:
+                return True
+        return False
+
+    def _trigger_reload(self) -> None:
+        now = time.time()
+        if now - self._autoreload_last_signal < 0.5:
+            return
+        self._autoreload_last_signal = now
+        if self._debug:
+            print("[p-sui] Reloading connected clients")
+        self._ws_manager.broadcast_reload()
+
+    def _register_ws(self, session_id: str, conn: _WebSocketConnection) -> None:
+        self._ws_manager.register(session_id, conn)
+
+    def _unregister_ws(self, session_id: str, conn: _WebSocketConnection) -> None:
+        self._ws_manager.unregister(session_id, conn)
+
+    def _push_pending_patches(self, session_id: str) -> None:
+        if not session_id:
+            return
+        with self._patch_lock:
+            queued = list(self._pending_patches.get(session_id, []))
+        if not queued:
+            return
+        if self._ws_manager.send_patches(session_id, queued):
+            with self._patch_lock:
+                self._pending_patches.pop(session_id, None)
+
+    def _queue_patch(
+        self,
+        session_id: str,
+        patch: Dict[str, str],
+        clear: Optional[Callable[[], None]],
+    ) -> None:
+        if not session_id:
+            if clear:
+                try:
+                    clear()
+                except Exception:
+                    pass
+            return
+        target_id = str(patch.get("id", "") or "")
+        if not target_id:
+            if clear:
+                try:
+                    clear()
+                except Exception:
+                    pass
+            return
+        with self._patch_lock:
+            queue = self._pending_patches.setdefault(session_id, [])
+            queue.append(
+                {
+                    "id": target_id,
+                    "swap": str(patch.get("swap", "inline") or "inline"),
+                    "html": patch.get("html", ""),
+                }
+            )
+            if clear:
+                self._patch_clear[(session_id, target_id)] = clear
+        self._push_pending_patches(session_id)
+
+    def _drain_patches(self, session_id: str) -> List[Dict[str, str]]:
+        if not session_id:
+            return []
+        with self._patch_lock:
+            return list(self._pending_patches.pop(session_id, []))
+
+    def _clear_patch_target(self, session_id: str, target_id: str) -> None:
+        if not session_id or not target_id:
+            return
+        key = (session_id, target_id)
+        callback: Optional[Callable[[], None]]
+        with self._patch_lock:
+            callback = self._patch_clear.pop(key, None)
+        if callback:
+            try:
+                callback()
+            except Exception:
+                pass
 
     def register(self, method: ActionType, path: str, callable_fn: Callable[[Context], str]) -> Callable[[Context], str]:
         key = (method, path)
@@ -538,6 +909,7 @@ class App:
                 parsed = urlparse(self.path)
                 path = _normalize_path(parsed.path)
                 body_items: Optional[List[BodyItem]] = None
+                payload = b""
                 if method == POST:
                     length = int(self.headers.get("Content-Length", "0") or 0)
                     payload = self.rfile.read(length) if length > 0 else b""
@@ -557,7 +929,7 @@ class App:
                                 body_items = items
                         except Exception:
                             body_items = None
-                if body_items is not None:
+                if body_items is not None and path not in {"/_psui/invalid"}:
                     _REQUEST_BODIES[id(self)] = body_items
                 set_cookie_header: str | None = None
                 try:
@@ -570,6 +942,80 @@ class App:
                         self._psui_session_id = sid_value
                     else:
                         self._psui_session_id = sid.value
+
+                    upgrade_header = (self.headers.get("Upgrade", "") or "").lower()
+
+                    if path == "/_psui/ws" and upgrade_header == "websocket":
+                        if method != GET:
+                            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
+                            return
+                        key = self.headers.get("Sec-WebSocket-Key", "")
+                        if not key:
+                            self.send_error(HTTPStatus.BAD_REQUEST)
+                            return
+                        accept_src = (key + _WS_GUID).encode("utf-8")
+                        accept_token = base64.b64encode(hashlib.sha1(accept_src).digest()).decode("utf-8")
+                        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+                        if set_cookie_header:
+                            self.send_header("Set-Cookie", set_cookie_header)
+                        self.send_header("Upgrade", "websocket")
+                        self.send_header("Connection", "Upgrade")
+                        self.send_header("Sec-WebSocket-Accept", accept_token)
+                        self.end_headers()
+                        try:
+                            self.wfile.flush()
+                        except Exception:
+                            pass
+                        session = getattr(self, "_psui_session_id", "")
+                        connection = _WebSocketConnection(self.connection)
+                        app._register_ws(session, connection)
+                        try:
+                            app._push_pending_patches(session)
+                            connection.run()
+                        finally:
+                            app._unregister_ws(session, connection)
+                            self.close_connection = True
+                        return
+
+                    if path == "/_psui/patch":
+                        if method != GET:
+                            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
+                            return
+                        patches = app._drain_patches(getattr(self, "_psui_session_id", ""))
+                        body = json.dumps({"patches": patches}).encode("utf-8")
+                        self.send_response(HTTPStatus.OK)
+                        if set_cookie_header:
+                            self.send_header("Set-Cookie", set_cookie_header)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(body)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+
+                    if path == "/_psui/invalid":
+                        if method != POST:
+                            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
+                            return
+                        target_id = ""
+                        if payload:
+                            try:
+                                data = json.loads(payload.decode("utf-8"))
+                                if isinstance(data, Mapping):
+                                    target_id = str(data.get("id", "") or "")
+                            except Exception:
+                                target_id = ""
+                        if target_id:
+                            app._clear_patch_target(getattr(self, "_psui_session_id", ""), target_id)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        if set_cookie_header:
+                            self.send_header("Set-Cookie", set_cookie_header)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
 
                     response = app._dispatch(self, method, path)
                     body = response.encode("utf-8")
@@ -614,7 +1060,11 @@ class App:
                 if app._debug:
                     super().log_message(format, *args)
 
-        server = HTTPServer(("0.0.0.0", port), _Handler)
+        class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        server = _ThreadingHTTPServer(("0.0.0.0", port), _Handler)
         if self._debug:
             print(f"[p-sui] Listening on http://0.0.0.0:{port}")
         try:
@@ -650,27 +1100,129 @@ _LOADER = Trim(
     (function(){
         if ((window).__loader) return;
         (window).__loader = (function(){
-            var overlay=null; var depth=0;
-            function ensure(){
-                if(!overlay){
-                    overlay=document.createElement('div');
-                    overlay.style.position='fixed';
-                    overlay.style.inset='0';
-                    overlay.style.display='flex';
-                    overlay.style.alignItems='center';
-                    overlay.style.justifyContent='center';
-                    overlay.style.background='rgba(0,0,0,0.25)';
-                    overlay.style.zIndex='9998';
-                    overlay.style.pointerEvents='none';
-                    overlay.innerHTML='<div class="bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 px-4 py-2 rounded shadow">Loading…</div>';
-                    document.body.appendChild(overlay);
+            var S = { count: 0, t: 0, el: null };
+            function build() {
+                var overlay = document.createElement('div');
+                overlay.className = 'fixed inset-0 z-50 flex items-center justify-center transition-opacity opacity-0';
+                try { overlay.style.backdropFilter = 'blur(3px)'; } catch(_){ }
+                try { overlay.style.webkitBackdropFilter = 'blur(3px)'; } catch(_){ }
+                try { overlay.style.background = 'rgba(255,255,255,0.28)'; } catch(_){ }
+                try { overlay.style.pointerEvents = 'auto'; } catch(_){ }
+
+                var badge = document.createElement('div');
+                badge.className = 'absolute top-3 left-3 flex items-center gap-2 rounded-full px-3 py-1 text-white shadow-lg ring-1 ring-white/30';
+                badge.style.background = 'linear-gradient(135deg, #6366f1, #22d3ee)';
+                badge.style.pointerEvents = 'auto';
+
+                var dot = document.createElement('span');
+                dot.className = 'inline-block h-2.5 w-2.5 rounded-full bg-white/95 animate-pulse';
+
+                var label = document.createElement('span');
+                label.className = 'font-semibold tracking-wide';
+                label.textContent = 'Loading…';
+
+                var sub = document.createElement('span');
+                sub.className = 'ml-1 text-white/85 text-xs';
+                sub.textContent = 'Please wait';
+                sub.style.color = 'rgba(255,255,255,0.9)';
+
+                badge.appendChild(dot);
+                badge.appendChild(label);
+                badge.appendChild(sub);
+
+                overlay.appendChild(badge);
+                document.body.appendChild(overlay);
+
+                try { requestAnimationFrame(function(){ overlay.style.opacity = '1'; }); } catch(_){ }
+                return overlay;
+            }
+            function start() {
+                S.count = S.count + 1;
+                if (S.el != null) { return { stop: stop }; }
+                if (S.t) { return { stop: stop }; }
+                S.t = setTimeout(function(){ S.t = 0; if (S.el == null) { S.el = build(); } }, 120);
+                return { stop: stop };
+            }
+            function stop() {
+                if (S.count > 0) { S.count = S.count - 1; }
+                if (S.count !== 0) { return; }
+                if (S.t) { try { clearTimeout(S.t); } catch(_){ } S.t = 0; }
+                if (S.el) {
+                    var el = S.el; S.el = null;
+                    try { el.style.opacity = '0'; } catch(_){ }
+                    setTimeout(function(){ try { if (el && el.parentNode) { el.parentNode.removeChild(el); } } catch(_){ } }, 160);
                 }
             }
-            return {
-                start: function(){ depth++; ensure(); return { stop: this.stop }; },
-                stop: function(){ depth=Math.max(0, depth-1); if(depth===0 && overlay){ try { overlay.remove(); } catch(_){} overlay=null; } }
-            };
+            return { start: start };
         })();
+    })();
+    """
+)
+
+_OFFLINE = Trim(
+    """
+    (function(){
+        if ((window).__offline) return;
+        var __offline = (function(){
+            var el = null;
+            function show(){
+                var existing = document.getElementById('__offline__');
+                if (existing) { el = existing; return; }
+                try { document.body.classList.add('pointer-events-none'); } catch(_){ }
+                var overlay = document.createElement('div');
+                overlay.id = '__offline__';
+                overlay.style.position = 'fixed';
+                overlay.style.inset = '0';
+                overlay.style.zIndex = '60';
+                overlay.style.pointerEvents = 'none';
+                overlay.style.opacity = '0';
+                overlay.style.transition = 'opacity 160ms ease-out';
+                try { overlay.style.backdropFilter = 'blur(2px)'; } catch(_){ }
+                try { overlay.style.webkitBackdropFilter = 'blur(2px)'; } catch(_){ }
+                try { overlay.style.background = 'rgba(255,255,255,0.18)'; } catch(_){ }
+
+                var badge = document.createElement('div');
+                badge.className = 'absolute top-3 left-3 flex items-center gap-2 rounded-full px-3 py-1 text-white shadow-lg ring-1 ring-white/30';
+                badge.style.background = 'linear-gradient(135deg, #ef4444, #ec4899)';
+                badge.style.pointerEvents = 'auto';
+
+                var dot = document.createElement('span');
+                dot.className = 'inline-block h-2.5 w-2.5 rounded-full bg-white/95 animate-pulse';
+
+                var label = document.createElement('span');
+                label.className = 'font-semibold tracking-wide';
+                label.textContent = 'Offline';
+                label.style.color = '#fff';
+
+                var sub = document.createElement('span');
+                sub.className = 'ml-1 text-white/85 text-xs';
+                sub.textContent = 'Trying to reconnect…';
+                sub.style.color = 'rgba(255,255,255,0.9)';
+
+                badge.appendChild(dot);
+                badge.appendChild(label);
+                badge.appendChild(sub);
+
+                overlay.appendChild(badge);
+                document.body.appendChild(overlay);
+
+                try { requestAnimationFrame(function(){ overlay.style.opacity = '1'; }); } catch(_){ }
+                el = overlay;
+            }
+            function hide(){
+                try { document.body.classList.remove('pointer-events-none'); } catch(_){ }
+                var o = document.getElementById('__offline__');
+                if (!o) { el = null; return; }
+                try { o.style.opacity = '0'; } catch(_){ }
+                setTimeout(function(){ try { if (o && o.parentNode) { o.parentNode.removeChild(o); } } catch(_){ } }, 150);
+                el = null;
+            }
+            return { show: show, hide: hide };
+        })();
+        (window).__offline = __offline;
+        try { window.addEventListener('online', function(){ try { __offline.hide(); } catch(_){ } }); } catch(_){ }
+        try { window.addEventListener('offline', function(){ try { __offline.show(); } catch(_){ } }); } catch(_){ }
+        try { if (typeof navigator !== 'undefined' && navigator.onLine === false) { __offline.show(); } } catch(_){ }
     })();
     """
 )
@@ -680,19 +1232,63 @@ _ERROR = Trim(
     (function(){
         if ((window).__error) return;
         (window).__error = function(message){
-            var box=document.createElement('div');
-            box.textContent=message || 'Error';
-            box.style.position='fixed';
-            box.style.bottom='20px';
-            box.style.right='20px';
-            box.style.padding='12px 16px';
-            box.style.background='#fee2e2';
-            box.style.color='#991b1b';
-            box.style.border='1px solid #fecaca';
-            box.style.borderRadius='12px';
-            box.style.boxShadow='0 6px 18px rgba(0,0,0,0.08)';
-            document.body.appendChild(box);
-            setTimeout(function(){ try { box.remove(); } catch(_){} }, 4000);
+            (function(){
+                try {
+                    var box = document.getElementById('__messages__');
+                    if (box == null) {
+                        box = document.createElement('div');
+                        box.id = '__messages__';
+                        box.style.position = 'fixed';
+                        box.style.top = '0';
+                        box.style.right = '0';
+                        box.style.padding = '8px';
+                        box.style.zIndex = '9999';
+                        box.style.pointerEvents = 'none';
+                        document.body.appendChild(box);
+                    }
+                    var n = document.getElementById('__error_toast__');
+                    if (!n) {
+                        n = document.createElement('div');
+                        n.id = '__error_toast__';
+                        n.style.display = 'flex';
+                        n.style.alignItems = 'center';
+                        n.style.gap = '10px';
+                        n.style.padding = '12px 16px';
+                        n.style.margin = '8px';
+                        n.style.borderRadius = '12px';
+                        n.style.minHeight = '44px';
+                        n.style.minWidth = '340px';
+                        n.style.maxWidth = '340px';
+                        n.style.background = '#fee2e2';
+                        n.style.color = '#991b1b';
+                        n.style.border = '1px solid #fecaca';
+                        n.style.borderLeft = '4px solid #dc2626';
+                        n.style.boxShadow = '0 6px 18px rgba(0,0,0,0.08)';
+                        n.style.fontWeight = '600';
+                        n.style.pointerEvents = 'auto';
+                        var dot = document.createElement('span');
+                        dot.style.width = '10px'; dot.style.height = '10px'; dot.style.borderRadius = '9999px'; dot.style.background = '#dc2626';
+                        n.appendChild(dot);
+                        var span = document.createElement('span');
+                        span.id = '__error_text__';
+                        n.appendChild(span);
+                        var btn = document.createElement('button');
+                        btn.textContent = 'Reload';
+                        btn.style.background = '#991b1b';
+                        btn.style.color = '#fff';
+                        btn.style.border = 'none';
+                        btn.style.padding = '6px 10px';
+                        btn.style.borderRadius = '8px';
+                        btn.style.cursor = 'pointer';
+                        btn.style.fontWeight = '700';
+                        btn.onclick = function(){ try { window.location.reload(); } catch(_){} };
+                        n.appendChild(btn);
+                        box.appendChild(n);
+                    }
+                    var spanText = document.getElementById('__error_text__');
+                    if (spanText) { spanText.textContent = message || 'Something went wrong ...'; }
+                } catch (_) { try { alert(message || 'Something went wrong ...'); } catch(__){} }
+            })();
         };
     })();
     """
@@ -722,8 +1318,12 @@ _POST = Trim(
                     else if(swap==='append'){ target.insertAdjacentHTML('beforeend', html); }
                     else if(swap==='prepend'){ target.insertAdjacentHTML('afterbegin', html); }
                 }
+                try { __offline.hide(); } catch(_){ }
             })
-            .catch(function(){ try { __error('Something went wrong ...'); } catch(_){} })
+            .catch(function(){
+                try { if (typeof navigator !== 'undefined' && navigator.onLine === false) { __offline.show(); } } catch(_){ }
+                try { __error('Something went wrong ...'); } catch(_){}
+            })
             .finally(function(){ L.stop(); });
     }
     """
@@ -775,38 +1375,199 @@ _LOAD = Trim(
                         document.body.appendChild(s);
                     }
                 } catch(_) {}
+                try { window.history.pushState({}, doc.title, href); } catch(_) {}
                 // Optional: scroll to top after navigation
                 try { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }); } catch(_) {}
+                try { __offline.hide(); } catch(_){ }
             })
-            .catch(function(){ try { __error('Something went wrong ...'); } catch(_){} })
+            .catch(function(){
+                try { if (typeof navigator !== 'undefined' && navigator.onLine === false) { __offline.show(); } } catch(_){ }
+                try { __error('Something went wrong ...'); } catch(_){}
+            })
             .finally(function(){ L.stop(); });
         return false;
     }
     """
 )
 
+_PATCH = Trim(
+    """
+    (function(){
+        if ((window).__psuiPatch) return;
+        (window).__psuiPatch = (function(){
+            var httpEndpoint = '/_psui/patch';
+            var invalidEndpoint = '/_psui/invalid';
+            var wsPath = '/_psui/ws';
+            var socket = null;
+            var reconnectTimer = 0;
+            var retry = 0;
+            var pollTimer = 0;
+            var pollInterval = 1500;
+            function applyPatch(patch){
+                if (!patch) { return; }
+                var id = String(patch.id || '');
+                if (!id) { return; }
+                var swap = String(patch.swap || 'inline');
+                var html = String(patch.html || '');
+                var el = document.getElementById(id);
+                if (!el) {
+                    notifyInvalid(id);
+                    return;
+                }
+                try {
+                    if (swap === 'inline') { el.innerHTML = html; }
+                    else if (swap === 'outline') { el.outerHTML = html; }
+                    else if (swap === 'append') { el.insertAdjacentHTML('beforeend', html); }
+                    else if (swap === 'prepend') { el.insertAdjacentHTML('afterbegin', html); }
+                } catch(_) { }
+            }
+            function applyPatches(list){
+                if (!Array.isArray(list)) { return; }
+                for (var i=0;i<list.length;i++) {
+                    applyPatch(list[i]);
+                }
+            }
+            function notifyInvalid(id){
+                if (!id) { return; }
+                try {
+                    fetch(invalidEndpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: id })
+                    });
+                } catch(_) { }
+            }
+            function handleMessage(event){
+                if (!event || !event.data) { return; }
+                var data = null;
+                try { data = JSON.parse(event.data); }
+                catch(_) { return; }
+                if (!data) { return; }
+                var type = String(data.type || '');
+                if (type === 'patch') {
+                    applyPatches(data.patches || []);
+                    return;
+                }
+                if (type === 'reload') {
+                    try { window.location.reload(); } catch(_){}
+                }
+            }
+            function poll(){
+                try {
+                    fetch(httpEndpoint, { method: 'GET', headers: { 'Accept': 'application/json' } })
+                        .then(function(resp){ if(!resp.ok) throw new Error('HTTP '+resp.status); return resp.json(); })
+                        .then(function(data){
+                            if (!data) { return; }
+                            applyPatches(data.patches || []);
+                        })
+                        .catch(function(){});
+                } catch(_) { }
+            }
+            function startPolling(){
+                if (pollTimer) { return; }
+                poll();
+                pollTimer = setInterval(poll, pollInterval);
+            }
+            function stopPolling(){
+                if (!pollTimer) { return; }
+                try { clearInterval(pollTimer); } catch(_){}
+                pollTimer = 0;
+            }
+            function cleanupSocket(){
+                if (!socket) { return; }
+                try {
+                    socket.onopen = null;
+                    socket.onmessage = null;
+                    socket.onclose = null;
+                    socket.onerror = null;
+                } catch(_) { }
+                socket = null;
+            }
+            function scheduleReconnect(){
+                if (reconnectTimer) { return; }
+                var attempt = retry;
+                retry = Math.min(retry + 1, 6);
+                var delay = Math.min(1200 * Math.pow(2, attempt), 10000);
+                reconnectTimer = setTimeout(function(){
+                    reconnectTimer = 0;
+                    connect();
+                }, delay);
+            }
+            function connect(){
+                var proto = 'ws';
+                try { proto = window.location.protocol === 'https:' ? 'wss' : 'ws'; } catch(_){}
+                var host = '';
+                try { host = window.location.host || ''; } catch(_){}
+                if (!host) {
+                    startPolling();
+                    return;
+                }
+                var url = proto + '://' + host + wsPath;
+                try {
+                    var ws = new WebSocket(url);
+                    socket = ws;
+                    ws.onopen = function(){
+                        retry = 0;
+                        stopPolling();
+                        poll();
+                    };
+                    ws.onmessage = handleMessage;
+                    ws.onerror = function(){
+                        cleanupSocket();
+                        scheduleReconnect();
+                        startPolling();
+                    };
+                    ws.onclose = function(){
+                        cleanupSocket();
+                        scheduleReconnect();
+                        startPolling();
+                    };
+                } catch(_) {
+                    scheduleReconnect();
+                    startPolling();
+                }
+            }
+            connect();
+            startPolling();
+            return { notifyInvalid: notifyInvalid, poll: poll };
+        })();
+    })();
+    """
+)
+
 _THEME = Trim(
     """
     (function(){
-        if ((window).__psuiThemeInit) return;
-        (window).__psuiThemeInit = true;
-        var doc = document.documentElement;
-        function apply(mode){
-            var m = mode;
-            if(m==='system'){
-                try {
-                    m = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-                } catch(_) { m='light'; }
+        try {
+            if ((window).__psuiThemeInit) { return; }
+            (window).__psuiThemeInit = true;
+            var doc = document.documentElement;
+            function apply(mode){
+                var m = mode;
+                if (m === 'system') {
+                    try {
+                        m = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+                    } catch(_) { m = 'light'; }
+                }
+                if (m === 'dark') { try { doc.classList.add('dark'); doc.style.colorScheme = 'dark'; } catch(_){} }
+                else { try { doc.classList.remove('dark'); doc.style.colorScheme = 'light'; } catch(_){} }
             }
-            if(m==='dark'){ doc.classList.add('dark'); doc.style.colorScheme='dark'; }
-            else { doc.classList.remove('dark'); doc.style.colorScheme='light'; }
-        }
-        function set(mode){ try { localStorage.setItem('theme', mode); } catch(_){} apply(mode); }
-        window.setTheme = set;
-        window.toggleTheme = function(){ var dark=doc.classList.contains('dark'); set(dark ? 'light' : 'dark'); };
-        var init='system';
-        try { init = localStorage.getItem('theme') || 'system'; } catch(_){}
-        apply(init);
+            function set(mode){ try { localStorage.setItem('theme', mode); } catch(_){} apply(mode); }
+            try { window.setTheme = set; } catch(_){ }
+            try { window.toggleTheme = function(){ var dark = !!doc.classList.contains('dark'); set(dark ? 'light' : 'dark'); }; } catch(_){ }
+            var init = 'system';
+            try { init = localStorage.getItem('theme') || 'system'; } catch(_){ }
+            apply(init);
+            try {
+                if (window.matchMedia) {
+                    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+                        var stored = '';
+                        try { stored = localStorage.getItem('theme') || ''; } catch(_){ }
+                        if (!stored || stored === 'system') { apply('system'); }
+                    });
+                }
+            } catch(_){ }
+        } catch(_){ }
     })();
     """
 )

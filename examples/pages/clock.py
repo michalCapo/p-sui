@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import ui
 from ui_server import Context
-from datetime import datetime
 
 
 def Clock(ctx: Context) -> str:
@@ -34,4 +35,3 @@ def Clock(ctx: Context) -> str:
     stop = ui.Interval(1000, update_clock)
 
     return Render(datetime.now())
-

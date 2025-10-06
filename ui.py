@@ -536,22 +536,27 @@ class _TextInput(_BaseInput):
             Label(self.cssLabel, {"for": self._target.id, "required": self.required})(label_text),
             input(
                 Classes(INPUT, self.size, self.cssInput, self.disabled and DISABLED),
-                {
-                    "id": self._target.id,
-                    "name": self.name,
-                    "type": self.as_type,
-                    "onclick": self.onclick,
-                    "onchange": self.onchange,
-                    "required": self.required,
-                    "disabled": self.disabled,
-                    "readonly": self.readonly,
-                    "placeholder": self.placeholder,
-                    "autocomplete": self.autocomplete,
-                    "pattern": self.pattern,
-                    "value": value,
-                },
+                self._input_attrs(value),
             ),
         )
+
+    def _input_attrs(self, value: str) -> Attr:
+        attrs: Attr = {
+            "id": self._target.id,
+            "name": self.name,
+            "type": self.as_type,
+            "onclick": self.onclick,
+            "onchange": self.onchange,
+            "required": self.required,
+            "disabled": self.disabled,
+            "readonly": self.readonly,
+            "placeholder": self.placeholder,
+            "pattern": self.pattern,
+            "value": value,
+        }
+        if self.autocomplete:
+            attrs["autocomplete"] = self.autocomplete
+        return attrs
 
 
 class _AreaInput(_BaseInput):
@@ -910,17 +915,16 @@ class _RadioInput:
             value = self.data.get(self.name)
             if value is not None:
                 selected = str(value)
-        input_el = input(
-            Classes("hover:cursor-pointer"),
-            {
-                "type": "radio",
-                "name": self.name,
-                "value": self.valueSet,
-                "checked": "checked" if selected == self.valueSet else None,
-                "disabled": self.disabled,
-                "required": self.required,
-            },
-        )
+        attrs: Attr = {
+            "id": self.target.id,
+            "type": "radio",
+            "name": self.name,
+            "value": self.valueSet,
+            "checked": "checked" if selected == self.valueSet else None,
+            "disabled": self.disabled,
+            "required": self.required,
+        }
+        input_el = input(Classes("hover:cursor-pointer"), attrs)
         wrapper = Classes(
             self.css,
             self.size,
@@ -928,11 +932,10 @@ class _RadioInput:
             self.required and "invalid-if",
             self.error and "invalid",
         )
-        return div(wrapper)(
-            Label(self.cssLabel, {"for": self.target.id, "required": self.required})(
-                label("flex items-center gap-2 cursor-pointer select-none")(input_el + " " + text)
-            )
-        )
+        label_css = Classes("flex items-center gap-2 cursor-pointer select-none", self.cssLabel)
+        label_body = f"{input_el} {text}".strip()
+        field_label = Label(label_css, {"for": self.target.id, "required": self.required})(label_body)
+        return div(wrapper)(field_label)
 
 
 class _RadioButtons:
@@ -994,8 +997,9 @@ class _RadioButtons:
             input_el = input("", attrs)
             items += label(cls)(input_el + " " + opt.get("value", ""))
         wrapper = Classes(self.css, self.required and "invalid-if", self.error and "invalid")
+        legend = Label("font-bold", {"required": self.required})(text)
         return div(wrapper)(
-            Label("font-bold", {"for": self.target.id, "required": self.required})(text),
+            legend,
             div("flex gap-2 flex-wrap")(items),
         )
 
