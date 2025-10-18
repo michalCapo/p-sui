@@ -1,7 +1,7 @@
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Sequence
+from typing import Any, List, Mapping, Optional, Sequence
 
 from ui_data import BOOL, DATES, SELECT, LoadResult, NormalizeForSearch, TField, TQuery
 
@@ -120,6 +120,68 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
     return None
 
 
+def _resolve_field_value(row: Any, key: str) -> Any:
+    if not key:
+        return None
+
+    # Direct attribute lookup first (dataclasses / objects).
+    if hasattr(row, key):
+        return getattr(row, key)
+
+    # Try case-insensitive attribute lookups.
+    lower_key = key.lower()
+    upper_key = key.upper()
+    camel_key = key[:1].lower() + key[1:]
+    for candidate in {lower_key, upper_key, camel_key}:
+        if hasattr(row, candidate):
+            return getattr(row, candidate)
+
+    # Mapping support.
+    if isinstance(row, Mapping):
+        if key in row:
+            return row[key]
+        for candidate in {lower_key, upper_key, camel_key}:
+            if candidate in row:
+                return row[candidate]
+        for map_key, value in row.items():
+            try:
+                if str(map_key).lower() == lower_key:
+                    return value
+            except Exception:
+                continue
+
+    # Fallback to __dict__ for objects without direct attributes (dataclasses).
+    data = getattr(row, "__dict__", None)
+    if isinstance(data, Mapping):
+        if key in data:
+            return data[key]
+        for attr_key, attr_value in data.items():
+            try:
+                if str(attr_key).lower() == lower_key:
+                    return attr_value
+            except Exception:
+                continue
+    return None
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return None
+    # Fallback for truthy / falsy values.
+    boolean = bool(value)
+    return boolean
+
+
 def _apply_filters(items: Sequence[Row], filters: Sequence[TField]) -> List[Row]:
     # Only apply filters that have user-provided values.
     filtered: List[Row] = list(items)
@@ -144,7 +206,14 @@ def _apply_filters(items: Sequence[Row], filters: Sequence[TField]) -> List[Row]
             if desired is None:
                 continue
 
-            filtered = [row for row in filtered if bool(getattr(row, key, False)) == desired]
+            snapshot = list(filtered)
+            next_rows: List[Row] = []
+            for row in snapshot:
+                value = _resolve_field_value(row, key)
+                bool_value = _as_bool(value)
+                if bool_value is not None and bool_value == desired:
+                    next_rows.append(row)
+            filtered = next_rows
             continue
 
         if field.As == SELECT:
@@ -152,7 +221,11 @@ def _apply_filters(items: Sequence[Row], filters: Sequence[TField]) -> List[Row]
             if not value:
                 continue
 
-            filtered = [row for row in filtered if str(getattr(row, key, "")).lower() == value.lower()]
+            filtered = [
+                row
+                for row in filtered
+                if str(_resolve_field_value(row, key) or "").strip().lower() == value.lower()
+            ]
             continue
 
         if field.As == DATES:
@@ -163,10 +236,18 @@ def _apply_filters(items: Sequence[Row], filters: Sequence[TField]) -> List[Row]
                 continue
 
             def within_range(row: Row) -> bool:
-                value = getattr(row, key, None)
-                if not isinstance(value, datetime):
+                value = _resolve_field_value(row, key)
+                current: Optional[date]
+                if isinstance(value, datetime):
+                    current = value.date()
+                elif isinstance(value, date):
+                    current = value
+                elif isinstance(value, str):
+                    current = _parse_date(value)
+                else:
+                    current = None
+                if current is None:
                     return False
-                current = value.date()
                 if date_from is not None and current < date_from:
                     return False
                 if date_to is not None and current > date_to:
