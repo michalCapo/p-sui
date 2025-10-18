@@ -313,6 +313,90 @@ def Label(css: str, *attrs: Attr) -> Callable[[str], str]:
     return render
 
 
+class Skeleton:
+    @staticmethod
+    def Default(target: "Target") -> str:
+        return div("animate-pulse w-full", target)(
+            div("bg-gray-200 h-5 rounded w-5/6 mb-2")(),
+            div("bg-gray-200 h-5 rounded w-2/3 mb-2")(),
+            div("bg-gray-200 h-5 rounded w-4/6")(),
+        )
+
+    @staticmethod
+    def List(target: "Target", count: int = 5) -> str:
+        count = max(1, count)
+        items = []
+        for _ in range(count):
+            items.append(
+                div("flex items-center gap-3 mb-3")(
+                    div("bg-gray-200 rounded-full h-10 w-10")(),
+                    div("flex-1")(
+                        div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
+                        div("bg-gray-200 h-4 rounded w-3/6")(),
+                    ),
+                )
+            )
+        return div("animate-pulse w-full", target)("".join(items))
+
+    @staticmethod
+    def Component(target: "Target") -> str:
+        return div("animate-pulse w-full", target)(
+            div("bg-gray-200 h-6 rounded w-2/5 mb-4")(),
+            div("bg-gray-200 h-4 rounded w-full mb-2")(),
+            div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
+            div("bg-gray-200 h-4 rounded w-4/6")(),
+        )
+
+    @staticmethod
+    def Page(target: "Target") -> str:
+        def card() -> str:
+            return div("bg-white rounded-lg p-4 shadow mb-4")(
+                div("bg-gray-200 h-5 rounded w-2/5 mb-3")(),
+                div("bg-gray-200 h-4 rounded w-full mb-2")(),
+                div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
+                div("bg-gray-200 h-4 rounded w-4/6")(),
+            )
+
+        return div("animate-pulse w-full", target)(
+            div("bg-gray-200 h-8 rounded w-1/3 mb-6")(),
+            card(),
+            card(),
+        )
+
+    @staticmethod
+    def Form(target: "Target") -> str:
+        def field_short() -> str:
+            return div("")(
+                div("bg-gray-200 h-4 rounded w-3/6 mb-2")(),
+                div("bg-gray-200 h-10 rounded w-full")(),
+            )
+
+        def field_area() -> str:
+            return div("")(
+                div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
+                div("bg-gray-200 h-20 rounded w-full")(),
+            )
+
+        def actions() -> str:
+            return div("flex gap-2 mt-4")(
+                div("bg-gray-200 h-10 rounded w-24")(),
+                div("bg-gray-200 h-10 rounded w-32")(),
+            )
+
+        return div("animate-pulse w-full", target)(
+            div("bg-white rounded-lg p-4 shadow")(
+                div("bg-gray-200 h-6 rounded w-2/5 mb-5")(),
+                div("grid grid-cols-1 md:grid-cols-2 gap-4")(
+                    div("")(field_short()),
+                    div("")(field_short()),
+                    div("")(field_area()),
+                    div("")(field_short()),
+                ),
+                actions(),
+            ),
+        )
+
+
 @dataclass
 class Target:
     id: str = field(default_factory=makeId)
@@ -1094,90 +1178,6 @@ class SimpleTable:
             rows_html.append("<tr>" + "".join(cells) + "</tr>")
         return (
             f'<table class="table-auto {self.css}"><tbody>' + "".join(rows_html) + "</tbody></table>"
-        )
-
-
-class Skeleton:
-    @staticmethod
-    def Default(target: Target) -> str:
-        return div("animate-pulse", {"id": target.id})(
-            div("bg-gray-200 h-5 rounded w-5/6 mb-2")(),
-            div("bg-gray-200 h-5 rounded w-2/3 mb-2")(),
-            div("bg-gray-200 h-5 rounded w-4/6")(),
-        )
-
-    @staticmethod
-    def List(target: Target, count: int = 5) -> str:
-        count = max(1, count)
-        items = []
-        for _ in range(count):
-            items.append(
-                div("flex items-center gap-3 mb-3")(
-                    div("bg-gray-200 rounded-full h-10 w-10")(),
-                    div("flex-1")(
-                        div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
-                        div("bg-gray-200 h-4 rounded w-3/6")(),
-                    ),
-                )
-            )
-        return div("animate-pulse", {"id": target.id})("".join(items))
-
-    @staticmethod
-    def Component(target: Target) -> str:
-        return div("animate-pulse", {"id": target.id})(
-            div("bg-gray-200 h-6 rounded w-2/5 mb-4")(),
-            div("bg-gray-200 h-4 rounded w-full mb-2")(),
-            div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
-            div("bg-gray-200 h-4 rounded w-4/6")(),
-        )
-
-    @staticmethod
-    def Page(target: Target) -> str:
-        def card() -> str:
-            return div("bg-white rounded-lg p-4 shadow mb-4")(
-                div("bg-gray-200 h-5 rounded w-2/5 mb-3")(),
-                div("bg-gray-200 h-4 rounded w-full mb-2")(),
-                div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
-                div("bg-gray-200 h-4 rounded w-4/6")(),
-            )
-
-        return div("animate-pulse", {"id": target.id})(
-            div("bg-gray-200 h-8 rounded w-1/3 mb-6")(),
-            card(),
-            card(),
-        )
-
-    @staticmethod
-    def Form(target: Target) -> str:
-        def field_short() -> str:
-            return div("")(
-                div("bg-gray-200 h-4 rounded w-3/6 mb-2")(),
-                div("bg-gray-200 h-10 rounded w-full")(),
-            )
-
-        def field_area() -> str:
-            return div("")(
-                div("bg-gray-200 h-4 rounded w-5/6 mb-2")(),
-                div("bg-gray-200 h-20 rounded w-full")(),
-            )
-
-        def actions() -> str:
-            return div("flex gap-2 mt-4")(
-                div("bg-gray-200 h-10 rounded w-24")(),
-                div("bg-gray-200 h-10 rounded w-32")(),
-            )
-
-        return div("animate-pulse", {"id": target.id})(
-            div("bg-white rounded-lg p-4 shadow")(
-                div("bg-gray-200 h-6 rounded w-2/5 mb-5")(),
-                div("grid grid-cols-1 md:grid-cols-2 gap-4")(
-                    div("")(field_short()),
-                    div("")(field_short()),
-                    div("")(field_area()),
-                    div("")(field_short()),
-                ),
-                actions(),
-            ),
         )
 
 

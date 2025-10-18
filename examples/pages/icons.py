@@ -4,7 +4,7 @@ import ui
 from ui_server import Context
 
 
-def Icons(_: Context) -> str:
+def Icons(ctx: Context) -> str:
     icon = ui.div("flex items-center gap-3 border border-gray-200 rounded p-4 bg-white rounded-lg")
 
     return ui.div("w-full")(
