@@ -23,7 +23,7 @@ from pages.clock import ClockContent
 from pages.collate import CollateContent
 from pages.counter import CounterContent
 from pages.date import DateContent
-from pages.deffered import Deffered
+from pages.deffered import DefferedContent
 from pages.hello import Hello
 from pages.icons import Icons
 from pages.login import Login
@@ -59,7 +59,7 @@ routes: List[Route] = [
     ("/clock", "Clock", ClockContent),
     ("/collate", "Collate", CollateContent),
     ("/counter", "Counter", CounterContent),
-    ("/deffered", "Deferred", Deffered),
+    ("/deffered", "Deferred", DefferedContent),
     ("/others", "Others", OthersContent),
 ]
 

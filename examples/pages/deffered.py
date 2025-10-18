@@ -9,13 +9,8 @@ from typing import Optional
 async def LazyLoadData(_: Context, target: ui.Target) -> str:
     await asyncio.sleep(2.0)
 
-    return ui.div(
-        "space-y-4",
-        target,
-    )(
-        ui.div(
-            "bg-gray-50 dark:bg-gray-900 p-4 rounded shadow border border-gray-200 rounded p-4",
-        )(
+    return ui.div( "space-y-4", target)(
+        ui.div( "bg-gray-50 dark:bg-gray-900 p-4 rounded shadow border border-gray-200 rounded p-4")(
             ui.div("text-lg font-semibold")("Deferred content loaded"),
             ui.div("text-gray-600 text-sm")(
                 "This block replaced the skeleton via WebSocket patch.",
@@ -68,7 +63,16 @@ def Deffered(ctx: Context) -> str:
     ctx.Patch(target.Replace, LazyLoadData(ctx, target))
 
     # append to the target when more data is loaded
-    ctx.Patch(target.Append, LazyMoreData(ctx, target))
+    # ctx.Patch(target.Append, LazyMoreData(ctx, target))
 
     return target.Skeleton(form["as"])
 
+
+def DefferedContent(ctx: Context) -> str:
+    return ui.div("max-w-full sm:max-w-6xl mx-auto flex flex-col gap-6 w-full")(
+        ui.div("text-3xl font-bold")("Deferred"),
+        ui.div("text-gray-600")("Deferred component with server-side rendering. When the server is busy, the client will show a skeleton."),
+        ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full flex gap-8")(
+            Deffered(ctx)
+        )
+    )

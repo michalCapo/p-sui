@@ -290,6 +290,9 @@ class _WebSocketConnection:
         self._socket = sock
         self._lock = threading.Lock()
         self._closed = False
+        self._ping_timer: Optional[threading.Timer] = None
+        self._pong_timeout_timer: Optional[threading.Timer] = None
+        self._pong_received = True
         try:
             self._socket.settimeout(1.0)
         except OSError:
@@ -308,22 +311,115 @@ class _WebSocketConnection:
             return False
         return self.send_text(text)
 
-    def run(self) -> None:
-        while not self._closed:
+    def send_ping(self) -> bool:
+        """Send a ping frame to keep the connection alive."""
+        if self._closed:
+            return False
+        return self._send_frame(0x9, b"")
+
+    def _schedule_ping(self) -> None:
+        """Schedule the next ping frame to be sent in 60 seconds."""
+        if self._closed:
+            return
+        self._ping_timer = threading.Timer(10.0, self._send_ping_and_reschedule)
+        self._ping_timer.daemon = True
+        self._ping_timer.start()
+
+    def _send_ping_and_reschedule(self) -> None:
+        """Send a ping frame and schedule the next one."""
+        if self._closed:
+            return
+        
+        # Check if we received a pong from the previous ping
+        if not self._pong_received:
+            # No pong received - connection is dead, close it
+            import sys
+            print("[WebSocket] Pong timeout - closing connection", file=sys.stderr)
+            self._close_socket()
+            return
+        
+        # Reset pong flag and send ping
+        self._pong_received = False
+        if self.send_ping():
+            import sys
+            print(f"[WebSocket] Ping sent", file=sys.stderr)
+            # Schedule a timeout to check for pong response
+            self._schedule_pong_timeout()
+            # Schedule next ping
+            self._schedule_ping()
+        else:
+            # Send failed, close connection
+            self._close_socket()
+
+    def _schedule_pong_timeout(self) -> None:
+        """Schedule a check for pong timeout (wait for pong response)."""
+        if self._closed:
+            return
+        # If there's already a timeout pending, don't schedule another
+        if self._pong_timeout_timer is not None:
+            return
+        # Pong timeout should be slightly longer than ping interval
+        # Ping interval is 10s, so timeout is 15s (1.5x multiplier)
+        self._pong_timeout_timer = threading.Timer(15.0, self._check_pong_timeout)
+        self._pong_timeout_timer.daemon = True
+        self._pong_timeout_timer.start()
+
+    def _check_pong_timeout(self) -> None:
+        """Check if pong was received; if not, close the connection."""
+        self._pong_timeout_timer = None
+        if self._closed:
+            return
+        if not self._pong_received:
+            # Pong timeout - no response from client, close connection
+            self._close_socket()
+
+    def _cancel_timers(self) -> None:
+        """Cancel all pending timers."""
+        if self._ping_timer is not None:
             try:
-                frame = self._recv_frame()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if frame is None:
-                break
-            opcode, payload = frame
-            if opcode == 0x8:  # Close
-                break
-            if opcode == 0x9:  # Ping
-                self._send_frame(0xA, payload)
-        self._close_socket()
+                self._ping_timer.cancel()
+            except Exception:
+                pass
+            self._ping_timer = None
+        if self._pong_timeout_timer is not None:
+            try:
+                self._pong_timeout_timer.cancel()
+            except Exception:
+                pass
+            self._pong_timeout_timer = None
+
+    def run(self) -> None:
+        self._schedule_ping()
+        try:
+            while not self._closed:
+                try:
+                    frame = self._recv_frame()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode == 0x8:  # Close
+                    break
+                if opcode == 0x9:  # Ping
+                    self._send_frame(0xA, payload)
+                if opcode == 0xA:  # Pong
+                    # Pong frame received, connection is alive
+                    self._pong_received = True
+                    # Cancel the timeout check since we got the pong
+                    if self._pong_timeout_timer is not None:
+                        try:
+                            self._pong_timeout_timer.cancel()
+                        except Exception:
+                            pass
+                        self._pong_timeout_timer = None
+                    import sys
+                    print("[WebSocket] Pong received - connection alive", file=sys.stderr)
+        finally:
+            self._cancel_timers()
+            self._close_socket()
 
     def _recv_exact(self, size: int) -> bytes:
         data = b""
@@ -566,13 +662,13 @@ class Context:
             <script>(function(){{
                 try {{
                     var el=document.getElementById('{target_id}');
-                    if(!el) {{ try {{ if(window.__psuiPatch&&window.__psuiPatch.notifyInvalid){{ window.__psuiPatch.notifyInvalid('{target_id}'); }} }} catch(_{{}}){{}}; return; }}
+                    if(!el) {{ try {{ if(window.__psuiPatch&&window.__psuiPatch.notifyInvalid){{ window.__psuiPatch.notifyInvalid('{target_id}'); }} }} catch(_){{}}; return; }}
                     var html={html_json};
                     if('{swap}'==='inline') {{ el.innerHTML = html; }}
                     else if('{swap}'==='outline') {{ el.outerHTML = html; }}
                     else if('{swap}'==='append') {{ el.insertAdjacentHTML('beforeend', html); }}
                     else if('{swap}'==='prepend') {{ el.insertAdjacentHTML('afterbegin', html); }}
-                }} catch(_{{}}){{}}
+                }} catch(_){{}}
             }})();</script>
             """
         )
@@ -1309,7 +1405,8 @@ _PATCH = Trim(
             var reconnectTimer = 0;
             var retry = 0;
             var pollTimer = 0;
-            var pollInterval = 1500;
+            // 3 seconds (reasonable fallback polling)
+            var pollInterval = 3000;  
             var wasDisconnected = false;
             var checkTimer = 0;
             function applyPatch(patch){
@@ -1399,7 +1496,6 @@ _PATCH = Trim(
             }
             function startPolling(){
                 if (pollTimer) { return; }
-                poll();
                 pollTimer = setInterval(poll, pollInterval);
             }
             function stopPolling(){
@@ -1442,11 +1538,10 @@ _PATCH = Trim(
                     socket = ws;
                     ws.onopen = function(){
                         retry = 0;
+                        wasDisconnected = false;
                         stopPolling();
-                        poll();
-                        if (wasDisconnected) {
-                            try { window.location.reload(); } catch(_){}
-                        }
+                        stopChecking();
+                        try { if (window.__offline && window.__offline.hide) { window.__offline.hide(); } } catch(_){}
                     };
                     ws.onmessage = handleMessage;
                     ws.onerror = function(){
@@ -1474,7 +1569,6 @@ _PATCH = Trim(
                 }
             }
             connect();
-            startPolling();
             return { notifyInvalid: notifyInvalid, poll: poll };
         })();
     })();
