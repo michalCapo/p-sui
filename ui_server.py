@@ -1493,6 +1493,7 @@ _PATCH = Trim(
                     fetch(httpEndpoint, { method: 'GET', headers: { 'Accept': 'application/json' } })
                         .then(function(resp){
                             if (resp.ok && wasDisconnected) {
+                                wasDisconnected = false;
                                 try { window.location.reload(); } catch(_){}
                             }
                             return resp.json();
@@ -1568,10 +1569,15 @@ _PATCH = Trim(
                     socket = ws;
                     ws.onopen = function(){
                         retry = 0;
-                        wasDisconnected = false;
                         stopPolling();
                         stopChecking();
-                        try { if (window.__offline && window.__offline.hide) { window.__offline.hide(); } } catch(_){}
+                        if (wasDisconnected) {
+                            wasDisconnected = false;
+                            try { __offline.hide(); } catch(_){}
+                            try { window.location.reload(); } catch(_){}
+                        } else {
+                            try { if (window.__offline && window.__offline.hide) { window.__offline.hide(); } } catch(_){}
+                        }
                     };
                     ws.onmessage = handleMessage;
                     ws.onerror = function(){
