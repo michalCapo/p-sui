@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import ui
 from ui_server import Context
-from .hello import Hello
-from .counter import Counter
-from .login import Login
-from .deffered import Deffered
-from .icons import Icons
-from .clock import Clock
+from pages.hello import Hello
+from pages.login import Login
+from pages.icons import Icons
 
 
 def OthersContent(ctx: Context) -> str:
