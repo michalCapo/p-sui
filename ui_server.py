@@ -602,9 +602,8 @@ class Context:
         target = _target_dict(action.get("target"))
         target_id = target.get("id", "")
         call = "__submit" if as_type == "FORM" else "__post"
-        return Normalize(
-            f"{call}(event, \"{swap}\", \"{target_id}\", \"{path}\", {payload})"
-        )
+        executable = f"""{call}(event, '{swap}', '{target_id}', '{path}', {payload})"""
+        return Normalize(f"{executable}")
 
     def Send(self, method: Callable[["Context"], str], *values: Mapping[str, Any]) -> _CallBuilder:
         callable_method = self.Callable(method)
@@ -1363,6 +1362,7 @@ _POST = Trim(
                 try { __error('Something went wrong ...'); } catch(_){}
             })
             .finally(function(){ L.stop(); });
+        return false;
     }
     """
 )

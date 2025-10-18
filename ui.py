@@ -197,6 +197,8 @@ def attributes(*items: Optional[Attr]) -> str:
         for key, value in item.items():
             if value is None or value is False:
                 continue
+            if isinstance(value, str) and value == "":
+                continue
             if key in {"disabled", "required", "readonly"}:
                 if value:
                     result.append(f"{key}=\"{key}\"")
