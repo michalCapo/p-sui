@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Generic, List, Optional, Sequence, TypeVar
 
 import ui
@@ -86,24 +86,31 @@ class TFieldDates:
 
 @dataclass
 class TField:
-    DB: str
-    Field: str
-    Text: str
-    Value: str
-    As: int
-    Condition: str
-    Options: List[Dict[str, str]]
-    Bool: bool
-    Dates: TFieldDates
+    DB: str = ""
+    Field: str = ""
+    Text: str = ""
+    Value: str = ""
+    As: int = 0
+    Condition: str = ""
+    Options: List[Dict[str, str]] = field(default_factory=list)
+    Bool: bool = False
+    Dates: TFieldDates = field(default_factory=TFieldDates)
+
+
+BOOL_ZERO_OPTIONS = [
+    {"id": "", "value": "All"},
+    {"id": "yes", "value": "On"},
+    {"id": "no", "value": "Off"},
+]
 
 
 @dataclass
 class TQuery:
-    Limit: int
-    Offset: int
-    Order: str
-    Search: str
-    Filter: List[TField]
+    Limit: int = 10
+    Offset: int = 0
+    Order: str = ""
+    Search: str = ""
+    Filter: List[TField] = field(default_factory=list)
 
 
 @dataclass
@@ -113,6 +120,14 @@ class LoadResult(Generic[T]):
     data: List[T]
 
 
+@dataclass
+class TCollateResult(Generic[T]):
+    Total: int
+    Filtered: int
+    Data: List[T]
+    Query: TQuery
+
+
 Loader = Callable[[TQuery], LoadResult[T]]
 
 
@@ -120,52 +135,92 @@ class CollateModel(Generic[T]):
     def __init__(self, init: TQuery, loader: Loader[T]) -> None:
         self._init = init
         self._loader = loader
-        self._target = ui.Target()
-        self._on_row: Optional[Callable[[T, int], str]] = None
-        self._sort_fields: List[TField] = []
-        self._filter_fields: List[TField] = []
+        self.target = ui.Target()
+        self.target_filter = ui.Target()
+        self.on_row: Optional[Callable[[T, int], str]] = None
+        self.sort_fields: List[TField] = []
+        self.filter_fields: List[TField] = []
+        self.search_fields: List[TField] = []
+        self.excel_fields: List[TField] = []
+        self.on_excel: Optional[Callable[[List[T]], Dict]] = None
 
     def setSort(self, fields: Sequence[TField]) -> None:
-        self._sort_fields = list(fields)
+        self.sort_fields = list(fields)
 
     def setFilter(self, fields: Sequence[TField]) -> None:
-        self._filter_fields = list(fields)
+        self.filter_fields = list(fields)
 
     def setSearch(self, fields: Sequence[TField]) -> None:
-        # Present for API compatibility; search fields are not used in the simplified implementation.
-        pass
+        self.search_fields = list(fields)
 
     def setExcel(self, fields: Sequence[TField]) -> None:
-        # API placeholder.
-        pass
+        self.excel_fields = list(fields)
 
     def Row(self, fn: Callable[[T, int], str]) -> None:
-        self._on_row = fn
+        self.on_row = fn
+
+    def Export(self, fn: Callable[[List[T]], Dict]) -> None:
+        self.on_excel = fn
 
     def Render(self, ctx) -> str:  # noqa: ANN001 - Context from ui_server
-        query = self._init
-        result = self._loader(query)
-        rows = []
-        if self._on_row:
-            for index, item in enumerate(result.data):
-                rows.append(self._on_row(item, index))
-        body = ui.div("flex flex-col gap-2", self._target)("".join(rows) or ui.div("text-gray-500")("No data"))
-        summary = ui.div("flex items-center justify-between text-sm text-gray-600")(
-            ui.span("")(f"Total: {result.total}"),
-            ui.span("")(f"Filtered: {result.filtered}"),
-            ui.span("")(f"Showing {len(result.data)} rows"),
+        query = self._make_query(self._init)
+        result = self._loader(query) if self._loader else LoadResult(total=0, filtered=0, data=[])
+        collate_result = TCollateResult(
+            Total=result.total if isinstance(result.total, int) else 0,
+            Filtered=result.filtered if isinstance(result.filtered, int) else 0,
+            Data=result.data if result.data else [],
+            Query=query,
         )
-        header = ui.div("flex flex-wrap gap-2 items-center")(
-            ui.span("font-semibold")("Simplified Collate"),
-            ui.span("text-gray-400 text-sm")(
-                "Interactive sorting, filters, and paging are not yet implemented in the Python port.",
+        return self._render_ui(ctx, query, collate_result, False)
+
+    def _make_query(self, def_query: Optional[TQuery]) -> TQuery:
+        """Create a normalized query from a default."""
+        d = def_query
+        if d is None:
+            d = TQuery(Limit=0, Offset=0, Order="", Search="", Filter=[])
+        if d.Offset < 0:
+            d.Offset = 0
+        if d.Limit <= 0:
+            d.Limit = 10
+        return TQuery(
+            Limit=d.Limit,
+            Offset=d.Offset,
+            Order=d.Order or "",
+            Search=d.Search or "",
+            Filter=d.Filter or [],
+        )
+
+    def _render_ui(self, ctx, query: TQuery, result: TCollateResult[T], loading: bool) -> str:
+        """Render the main UI - simplified version without interactive callbacks."""
+        header = ui.div("flex flex-col")(
+            ui.div("flex gap-x-2")(
+                ui.div("flex gap-1")(),  # Sorting placeholder
+                ui.Flex1,
+                ui.div("flex gap-px bg-blue-800 rounded-lg")(),  # Search placeholder
             ),
         )
-        return ui.div("flex flex-col gap-3")(
-            header,
-            summary,
-            body,
+
+        rows = self._render_rows(result.Data, self.on_row)
+        
+        size = len(result.Data) if result.Data else 0
+        if result.Filtered == result.Total:
+            count = f"Showing {size} / {result.Total}"
+        else:
+            count = f"Showing {size} / {result.Filtered} of {result.Total} in total"
+
+        pager = ui.div("flex items-center justify-center")(
+            ui.div("mx-4 font-bold text-lg")(count),
         )
+
+        return ui.div("flex flex-col gap-2 mt-2", self.target)(header, rows, pager)
+
+    def _render_rows(self, data: List[T], on_row: Optional[Callable[[T, int], str]]) -> str:
+        """Render data rows."""
+        if not data:
+            return ""
+        if not on_row:
+            return ui.div("")("Missing row renderer")
+        return "".join([on_row(item, i) for i, item in enumerate(data)])
 
 
 def Collate(init: TQuery, loader: Loader[T]) -> CollateModel[T]:
@@ -179,9 +234,12 @@ __all__ = [
     "ZERO_DATE",
     "DATES",
     "SELECT",
+    "BOOL_ZERO_OPTIONS",
     "TField",
     "TFieldDates",
     "TQuery",
     "LoadResult",
+    "TCollateResult",
     "Collate",
+    "CollateModel",
 ]
