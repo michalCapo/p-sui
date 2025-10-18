@@ -318,6 +318,8 @@ class Target:
     id: str = field(default_factory=makeId)
 
     def Skeleton(self, skeleton_type: Optional[str] = None) -> str:
+        if skeleton_type is None:
+            return Skeleton.Default(self)
         if skeleton_type == "list":
             return Skeleton.List(self, 5)
         if skeleton_type == "component":
@@ -326,6 +328,7 @@ class Target:
             return Skeleton.Page(self)
         if skeleton_type == "form":
             return Skeleton.Form(self)
+
         return Skeleton.Default(self)
 
     @property

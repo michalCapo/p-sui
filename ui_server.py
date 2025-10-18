@@ -649,11 +649,41 @@ class Context:
         except Exception:
             resolved = None
 
-        try:
-            resolved = _resolve_awaitable(resolved)
-        except Exception:
-            resolved = None
-
+        # Check if the resolved value is awaitable
+        if inspect.isawaitable(resolved):
+            # Execute async function in background thread
+            session_id = str(self.sessionID or "")
+            
+            def run_async_in_thread():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(resolved)
+                    html_text = _ensure_text(result)
+                    
+                    # Queue the patch to be sent via WebSocket
+                    if target_id and session_id:
+                        self.app._queue_patch(
+                            session_id,
+                            {"id": target_id, "swap": swap, "html": html_text},
+                            clear,
+                        )
+                    elif clear:
+                        try:
+                            clear()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                finally:
+                    loop.close()
+            
+            # Start background thread
+            thread = threading.Thread(target=run_async_in_thread, daemon=True)
+            thread.start()
+            return
+        
+        # Synchronous path (original behavior)
         html_text = _ensure_text(resolved)
         html_json = json.dumps(html_text)
 

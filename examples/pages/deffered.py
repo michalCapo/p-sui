@@ -59,11 +59,11 @@ def Deffered(ctx: Context) -> str:
     # scans the body into form object
     ctx.Body(form)
 
-    # replace the target when the data is loaded
+    # replace the target when the data is loaded (asynchronously in background)
     ctx.Patch(target.Replace, LazyLoadData(ctx, target))
 
-    # append to the target when more data is loaded
-    # ctx.Patch(target.Append, LazyMoreData(ctx, target))
+    # append to the target when more data is loaded (uncomment to enable)
+    ctx.Patch(target.Append, LazyMoreData(ctx, target))
 
     return target.Skeleton(form["as"])
 
