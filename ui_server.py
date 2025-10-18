@@ -766,6 +766,10 @@ class _SubmitBuilder:
         return self._attr("none", None)
 
 
+def _callable_target(fn: Callable[[Context], str]) -> Callable[[Context], str]:
+    return getattr(fn, "__func__", fn)
+
+
 class App:
     def __init__(self, default_language: str) -> None:
         self.contentId = Target()
@@ -888,7 +892,7 @@ class App:
     def register(self, method: ActionType, path: str, callable_fn: Callable[[Context], str]) -> Callable[[Context], str]:
         key = (method, path)
         self._routes[key] = callable_fn
-        setattr(callable_fn, "psui_url", path)
+        setattr(_callable_target(callable_fn), "psui_url", path)
         return callable_fn
 
     def Page(self, path: str, component: Callable[[Context], str]) -> Callable[[Context], str]:
@@ -896,7 +900,8 @@ class App:
         return self.register(GET, normalized, component)
 
     def Action(self, uid: str, action: Callable[[Context], str]) -> Callable[[Context], str]:
-        if hasattr(action, "psui_url"):
+        target = _callable_target(action)
+        if hasattr(target, "psui_url"):
             return action
         normalized = _normalize_path(uid)
         # Ensure uniqueness by appending random suffix if already registered
@@ -905,7 +910,7 @@ class App:
         return self.register(POST, normalized, action)
 
     def Callable(self, callable_fn: Callable[[Context], str]) -> Callable[[Context], str]:
-        existing = getattr(callable_fn, "psui_url", None)
+        existing = getattr(_callable_target(callable_fn), "psui_url", None)
         if existing:
             return callable_fn
         slug = callable_fn.__name__ or "anonymous"
@@ -915,7 +920,7 @@ class App:
         return self.Action(path, callable_fn)
 
     def path_of(self, callable_fn: Callable[[Context], str]) -> Optional[str]:
-        return getattr(callable_fn, "psui_url", None)
+        return getattr(_callable_target(callable_fn), "psui_url", None)
 
     def _dispatch(self, handler: BaseHTTPRequestHandler, method: ActionType, path: str) -> str:
         key = (method, path)
