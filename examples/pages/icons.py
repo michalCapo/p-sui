@@ -5,7 +5,7 @@ from ui_server import Context
 
 
 def Icons(_: Context) -> str:
-    icon = ui.div("flex items-center gap-3 border rounded p-4 bg-white rounded-lg border-gray-300")
+    icon = ui.div("flex items-center gap-3 border border-gray-200 rounded p-4 bg-white rounded-lg")
 
     return ui.div("w-full")(
         ui.div("flex flex-col gap-3")(

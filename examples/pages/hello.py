@@ -25,7 +25,7 @@ def say_hello_again(_: Context) -> str:
     raise Exception("Hello again")
 
 
-buttons = "rounded whitespace-nowrap bg-white border border-gray-300 rounded-lg"
+buttons = "rounded whitespace-nowrap bg-white border border-gray-200 rounded-lg"
 
 def Hello(ctx: Context) -> str:
     return ui.div("gap-4")(

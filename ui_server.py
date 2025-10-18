@@ -64,10 +64,11 @@ _DARK_STYLE = Trim(
     r"""
     <style id="psui-dark-overrides">
       html.dark { color-scheme: dark; }
-      /* Override backgrounds commonly used by components and examples.
-         Do not override bg-gray-200 so skeleton placeholders remain visible. */
-      html.dark.bg-white, html.dark.bg-gray-100 { background-color:#111827 !important; }
+      /* Override backgrounds commonly used by components and examples */
+      html.dark.bg-white, html.dark.bg-gray-100, html.dark.bg-gray-200 { background-color:#111827 !important; }
       .dark .bg-white, .dark .bg-gray-100, .dark .bg-gray-50 { background-color:#111827 !important; }
+      /* Keep skeleton loaders visible by not overriding bg-gray-200 in animate-pulse context */
+      .dark .animate-pulse .bg-gray-200 { background-color:#374151 !important; }
       /* Text color overrides */
       .dark .text-black, .dark .text-gray-800, .dark .text-gray-700 { color:#e5e7eb !important; }
       /* Borders and placeholders for form controls */

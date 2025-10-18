@@ -11,7 +11,7 @@ class RadioData(TypedDict):
 
 def RadioContent(_ctx: Context) -> str:
     def card(title: str, body: str) -> str:
-        return ui.div("bg-white p-4 rounded-lg shadow flex flex-col gap-3")(
+        return ui.div("bg-white p-4 rounded-lg shadow border border-gray-200 flex flex-col gap-3")(
             ui.div("text-sm font-bold text-gray-700")(title),
             body,
         )

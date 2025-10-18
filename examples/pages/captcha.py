@@ -13,7 +13,7 @@ def CaptchaContent(ctx: Context) -> str:
     return ui.div("max-w-full sm:max-w-6xl mx-auto flex flex-col gap-6 w-full")(
         ui.div("text-3xl font-bold")("Captcha"),
         ui.div("text-gray-600")("CAPTCHA component with server-side validation."),
-        ui.div("bg-white p-6 rounded-lg shadow w-full")(Captcha(_on_validated).Render(ctx)),
+        ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(Captcha(_on_validated).Render(ctx)),
     )
 
 

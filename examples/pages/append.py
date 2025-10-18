@@ -19,7 +19,7 @@ def format_time(date: datetime) -> str:
 
 
 def render_entry(text: str) -> str:
-    return ui.div("p-2 rounded border bg-white dark:bg-gray-900")(
+    return ui.div("p-2 rounded border border-gray-200 bg-white dark:bg-gray-900")(
         ui.span("text-sm text-gray-600")(text),
     )
 

@@ -6,7 +6,7 @@ from ui_server import Context
 
 def ButtonContent(_ctx: Context) -> str:
     def row(title: str, content: str) -> str:
-        return ui.div("bg-white p-4 rounded-lg shadow flex flex-col gap-3")(
+        return ui.div("bg-white p-4 rounded-lg shadow border border-gray-200 flex flex-col gap-3")(
             ui.div("text-sm font-bold text-gray-700")(title),
             content,
         )

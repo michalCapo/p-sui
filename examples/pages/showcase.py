@@ -72,7 +72,7 @@ def render(ctx: Context, f: DemoForm, err: Exception | None) -> str:
         error_message = ui.div("text-red-600 p-4 rounded text-center border-4 border-red-600 bg-white")(err.args[0] if err.args else str(err))
 
     return ui.div("grid gap-4 sm:gap-6 items-start w-full", _demo_target)(
-        ui.form("flex flex-col gap-4 bg-white p-6 rounded-lg shadow w-full", _demo_target, ctx.Submit(action_submit).Replace(_demo_target))(
+        ui.form("flex flex-col gap-4 bg-white p-6 rounded-lg shadow border border-gray-200 w-full", _demo_target, ctx.Submit(action_submit).Replace(_demo_target))(
             ui.div("text-xl font-bold")("Component Showcase Form"),
             error_message,
             ui.IText("Name", f).Required().Render("Name"),

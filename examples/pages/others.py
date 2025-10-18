@@ -17,7 +17,7 @@ def OthersContent(ctx: Context) -> str:
             "Miscellaneous demos: Hello, Counter, Login, and icon helpers.",
         ),
         # clock (WS)
-        ui.div("bg-white p-6 rounded-lg shadow w-full")(
+        ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
             ui.div("text-lg font-bold")("Clock (WS)"),
             ui.div("text-gray-600 mb-3")(
                 "Updates every second via server-sent patches.",
@@ -25,7 +25,7 @@ def OthersContent(ctx: Context) -> str:
             Clock(ctx),
         ),
         # deferred (WS)
-        ui.div("bg-white p-6 rounded-lg shadow w-full")(
+        ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
             ui.div("text-lg font-bold")("Deferred (WS)"),
             ui.div("text-gray-600 mb-3")(
                 "Shows a skeleton that is replaced when the server finishes rendering.",
@@ -34,12 +34,12 @@ def OthersContent(ctx: Context) -> str:
         ),
         ui.div("grid grid-cols-2 gap-4")(
             # hello
-            ui.div("bg-white p-6 rounded-lg shadow w-full")(
+            ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
                 ui.div("text-lg font-bold mb-3")("Hello"),
                 Hello(ctx),
             ),
             # counter
-            ui.div("bg-white p-6 rounded-lg shadow w-full")(
+            ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
                 ui.div("text-lg font-bold mb-3")("Counter"),
                 ui.div("flex gap-4 items-center p-4 border rounded")(
                     Counter(ctx, 4),
@@ -48,12 +48,12 @@ def OthersContent(ctx: Context) -> str:
                 ),
             ),
             # login
-            ui.div("bg-white p-6 rounded-lg shadow w-full")(
+            ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
                 ui.div("text-lg font-bold mb-3")("Login"),
                 Login(ctx),
             ),
             # icons
-            ui.div("bg-white p-6 rounded-lg shadow w-full")(
+            ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(
                 ui.div("text-lg font-bold mb-3")("Icons"),
                 Icons(),
             ),

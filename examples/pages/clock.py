@@ -26,7 +26,6 @@ def Clock(ctx: Context) -> str:
     def Render(d: datetime) -> str:
         return ui.div("flex items-baseline gap-3", target)(
             ui.div("text-4xl font-mono tracking-widest")(fmt_time(d)),
-            ui.div("text-gray-500")("Live server time"),
         )
 
     def update_clock() -> None:
@@ -35,3 +34,10 @@ def Clock(ctx: Context) -> str:
     stop = ui.Interval(1000, update_clock)
 
     return Render(datetime.now())
+
+def ClockContent(ctx: Context) -> str:
+    return ui.div("max-w-full sm:max-w-6xl mx-auto flex flex-col gap-6 w-full")(
+        ui.div("text-3xl font-bold")("Clock"),
+        ui.div("text-gray-600")("Live server time, updated every second via WebSocket patches."),
+        ui.div("bg-white p-6 rounded-lg shadow border border-gray-200 w-full")(Clock(ctx)),
+    )

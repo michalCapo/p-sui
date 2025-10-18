@@ -17,7 +17,7 @@ def _action_login(ctx: Context) -> str:
     if form_data.get("Name") != "user" or form_data.get("Password") != "password":
         return _render(ctx, form_data, "Invalid credentials")
     return ui.div(
-        "text-green-600 max-w-md p-8 text-center font-bold rounded-lg bg-white shadow-xl",
+        "text-green-600 max-w-md p-8 text-center font-bold rounded-lg bg-white shadow-xl border border-gray-200",
     )("Success")
 
 
@@ -31,7 +31,7 @@ def _render(ctx: Context, data: dict, error: str | None) -> str:
     form_attrs = ctx.Submit(_action_login).Replace(_form_target)
 
     return ui.form(
-        "border flex flex-col gap-4 max-w-md bg-white p-8 rounded-lg shadow-xl",
+        "border border-gray-200 flex flex-col gap-4 max-w-md bg-white p-8 rounded-lg shadow-xl",
         _form_target,
         form_attrs,
     )(

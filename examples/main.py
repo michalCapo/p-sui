@@ -19,9 +19,9 @@ from pages.area import AreaContent
 from pages.button import ButtonContent
 from pages.captcha import CaptchaContent
 from pages.checkbox import CheckboxContent
-from pages.clock import Clock
+from pages.clock import ClockContent
 from pages.collate import CollateContent
-from pages.counter import Counter
+from pages.counter import CounterContent
 from pages.date import DateContent
 from pages.deffered import Deffered
 from pages.hello import Hello
@@ -56,9 +56,9 @@ routes: List[Route] = [
     ("/text", "Text", TextContent),
     ("/append", "Append", AppendContent),
     ("/captcha", "Captcha", CaptchaContent),
-    ("/clock", "Clock", Clock),
+    ("/clock", "Clock", ClockContent),
     ("/collate", "Collate", CollateContent),
-    ("/counter", "Counter", Counter),
+    ("/counter", "Counter", CounterContent),
     ("/deffered", "Deferred", Deffered),
     ("/others", "Others", OthersContent),
 ]
@@ -104,8 +104,8 @@ def _layout(title: str, body_fn: Callable[[Context], str]) -> Callable[[Context]
         content = body_fn(ctx)
         return app.HTML(
             title,
-            "bg-gray-100 dark:bg-gray-900 min-h-screen",
-            nav + ui.div("pt-24 max-w-5xl mx-auto px-2")(content),
+            "bg-gray-200 dark:bg-gray-900 min-h-screen",
+            nav + ui.div("pt-24 max-w-5xl mx-auto px-2 py-8")(content),
         )
 
     return render
@@ -116,7 +116,6 @@ for path, title, handler in routes:
 
 app.Debug(True)
 app.AutoReload(False)
-
 
 def run(port: int = 1422) -> None:
     app.Listen(port)
