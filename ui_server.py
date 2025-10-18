@@ -283,8 +283,6 @@ def _target_dict(target: Any) -> Dict[str, Any]:
 
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-_AUTORELOAD_EXTENSIONS = {".py", ".html", ".htm", ".js", ".ts", ".css", ".json"}
-_AUTORELOAD_IGNORED_PARTS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
 
 
 class _WebSocketConnection:
@@ -670,11 +668,6 @@ class App:
         self._pending_patches: Dict[str, List[Dict[str, str]]] = {}
         self._patch_clear: Dict[Tuple[str, str], Callable[[], None]] = {}
         self._ws_manager = _WebSocketManager()
-        self._autoreload_enabled = False
-        self._autoreload_thread: Optional[threading.Thread] = None
-        self._autoreload_event = threading.Event()
-        self._autoreload_watch: List[Path] = [Path.cwd()]
-        self._autoreload_last_signal = 0.0
 
     def HTMLBody(self, css: str) -> str:
         css = Classes(css)
@@ -695,93 +688,6 @@ class App:
 
     def Debug(self, enable: bool) -> None:
         self._debug = bool(enable)
-
-    def AutoReload(self, enable: bool) -> None:
-        enable = bool(enable)
-        self._autoreload_enabled = enable
-        if enable:
-            if self._autoreload_thread and self._autoreload_thread.is_alive():
-                return
-            self._autoreload_event.clear()
-            self._autoreload_thread = threading.Thread(
-                target=self._autoreload_worker,
-                name="psui-autoreload",
-                daemon=True,
-            )
-            self._autoreload_thread.start()
-            if self._debug:
-                print("[p-sui] AutoReload enabled (watching for changes)")
-        else:
-            self._autoreload_event.set()
-            thread = self._autoreload_thread
-            if thread and thread.is_alive():
-                thread.join(timeout=0.5)
-            self._autoreload_thread = None
-            if self._debug:
-                print("[p-sui] AutoReload disabled")
-
-    def _autoreload_worker(self) -> None:
-        try:
-            previous = self._snapshot_files()
-        except Exception:
-            previous = {}
-        while not self._autoreload_event.wait(1.0):
-            try:
-                current = self._snapshot_files()
-            except Exception:
-                continue
-            if self._files_changed(previous, current):
-                previous = current
-                self._trigger_reload()
-
-    def _snapshot_files(self) -> Dict[str, float]:
-        snapshot: Dict[str, float] = {}
-        for root in self._autoreload_watch:
-            try:
-                base = Path(root)
-            except Exception:
-                continue
-            if not base.exists():
-                continue
-            try:
-                iterator = base.rglob("*")
-            except Exception:
-                continue
-            for path in iterator:
-                try:
-                    if path.is_dir():
-                        continue
-                except OSError:
-                    continue
-                if any(part in _AUTORELOAD_IGNORED_PARTS for part in path.parts):
-                    continue
-                suffix = path.suffix.lower()
-                if suffix and suffix not in _AUTORELOAD_EXTENSIONS:
-                    continue
-                try:
-                    mtime = path.stat().st_mtime
-                except OSError:
-                    continue
-                snapshot[str(path)] = mtime
-        return snapshot
-
-    @staticmethod
-    def _files_changed(previous: Mapping[str, float], current: Mapping[str, float]) -> bool:
-        if len(previous) != len(current):
-            return True
-        for key, value in current.items():
-            if previous.get(key) != value:
-                return True
-        return False
-
-    def _trigger_reload(self) -> None:
-        now = time.time()
-        if now - self._autoreload_last_signal < 0.5:
-            return
-        self._autoreload_last_signal = now
-        if self._debug:
-            print("[p-sui] Reloading connected clients")
-        self._ws_manager.broadcast_reload()
 
     def _register_ws(self, session_id: str, conn: _WebSocketConnection) -> None:
         self._ws_manager.register(session_id, conn)
@@ -1404,6 +1310,8 @@ _PATCH = Trim(
             var retry = 0;
             var pollTimer = 0;
             var pollInterval = 1500;
+            var wasDisconnected = false;
+            var checkTimer = 0;
             function applyPatch(patch){
                 if (!patch) { return; }
                 var id = String(patch.id || '');
@@ -1452,6 +1360,31 @@ _PATCH = Trim(
                 if (type === 'reload') {
                     try { window.location.reload(); } catch(_){}
                 }
+            }
+            function checkConnection(){
+                try {
+                    fetch(httpEndpoint, { method: 'GET', headers: { 'Accept': 'application/json' } })
+                        .then(function(resp){
+                            if (resp.ok && wasDisconnected) {
+                                try { window.location.reload(); } catch(_){}
+                            }
+                            return resp.json();
+                        })
+                        .then(function(data){
+                            if (!data) { return; }
+                            applyPatches(data.patches || []);
+                        })
+                        .catch(function(){});
+                } catch(_) { }
+            }
+            function startChecking(){
+                if (checkTimer) { return; }
+                checkTimer = setInterval(checkConnection, pollInterval);
+            }
+            function stopChecking(){
+                if (!checkTimer) { return; }
+                try { clearInterval(checkTimer); } catch(_){}
+                checkTimer = 0;
             }
             function poll(){
                 try {
@@ -1511,21 +1444,33 @@ _PATCH = Trim(
                         retry = 0;
                         stopPolling();
                         poll();
+                        if (wasDisconnected) {
+                            try { window.location.reload(); } catch(_){}
+                        }
                     };
                     ws.onmessage = handleMessage;
                     ws.onerror = function(){
+                        wasDisconnected = true;
+                        try { if (window.__offline && window.__offline.show) { window.__offline.show(); } } catch(_){}
                         cleanupSocket();
                         scheduleReconnect();
                         startPolling();
+                        startChecking();
                     };
                     ws.onclose = function(){
+                        wasDisconnected = true;
+                        try { if (window.__offline && window.__offline.show) { window.__offline.show(); } } catch(_){}
                         cleanupSocket();
                         scheduleReconnect();
                         startPolling();
+                        startChecking();
                     };
                 } catch(_) {
+                    wasDisconnected = true;
+                    try { if (window.__offline && window.__offline.show) { window.__offline.show(); } } catch(_){}
                     scheduleReconnect();
                     startPolling();
+                    startChecking();
                 }
             }
             connect();

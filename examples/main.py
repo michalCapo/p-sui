@@ -115,7 +115,6 @@ for path, title, handler in routes:
     app.Page(path, _layout(title, handler))
 
 app.Debug(True)
-app.AutoReload(False)
 
 def run(port: int = 1422) -> None:
     app.Listen(port)
